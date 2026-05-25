@@ -236,10 +236,29 @@ export const AuthProvider = ({ children }) => {
     }
   }
 
-  const signOut = async () => {
-    const { error } = await supabase.auth.signOut()
-    return { error }
+const signOut = async () => {
+  try {
+    // 1. 开启加载动画（转圈圈）
+    setLoading(true); 
+    
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+
+    // 2. 关键：成功后，必须手动把本地的 user 状态设为 null
+    // 注意：这里的 setUser 要对应你项目里定义的用户状态设置函数（通常叫 setUser）
+    if (typeof setUser === 'function') {
+      setUser(null); 
+    }
+    
+    return { error: null };
+  } catch (error) {
+    console.error("退出登录失败:", error.message);
+    return { error };
+  } finally {
+    // 3. 终极关键：无论成功还是失败，最后必须关闭转圈圈状态！
+    setLoading(false); 
   }
+};
 
   const value = {
     user,

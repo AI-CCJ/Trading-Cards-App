@@ -1,14 +1,16 @@
 import React, { useState, useEffect } from 'react'
-import { Calendar, DollarSign, Clock, Image as ImageIcon, Tag, Loader, Edit2, Trash2, Heart, ShoppingCart, Plus, Minus } from 'lucide-react'
+import { Calendar, DollarSign, Clock, Image as ImageIcon, Tag, Loader, Edit2, Trash2, Heart, ShoppingCart, Plus, Minus, X, Maximize2, EyeOff, Eye } from 'lucide-react'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../contexts/AuthContext'
+import CardDetailDrawer from './CardDetailDrawer'
 
-const CardGrid = ({ filterIds = null }) => {
+const CardGrid = ({ filterIds = null, mode = 'all' }) => {
   const [sortBy, setSortBy] = useState('created_at')
   const [cards, setCards] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const { user, cart, favorites, toggleCart, updateCartQuantity, toggleFavorite } = useAuth()
+  const [selectedCard, setSelectedCard] = useState(null)
+  const { user, profile, cart, favorites, toggleCart, updateCartQuantity, toggleFavorite } = useAuth()
 
   // 从数据库加载卡牌数据
   const fetchCards = async (sortField = 'created_at') => {
@@ -20,6 +22,32 @@ const CardGrid = ({ filterIds = null }) => {
       let query = supabase
         .from('cards')
         .select('*')
+
+      // 权限过滤逻辑
+      // 1. 如果是管理员，可以看到所有
+      // 2. 如果是普通登录用户，可以看到 [公开产品] OR [自己的非公开产品]
+      // 3. 如果是未登录用户，只能看到 [公开产品]
+      // 4. 如果是 my_cards 模式，仅看自己的
+      
+      const isAdmin = profile?.role === 'admin' || user?.email === 'admin@gmail.com'; 
+      
+      if (mode === 'my_cards') {
+        if (user) {
+          query = query.eq('user_id', user.id)
+        } else {
+          setCards([])
+          setLoading(false)
+          return
+        }
+      } else if (!isAdmin) {
+        if (user) {
+          // 登录用户：(is_public = true) OR (user_id = 当前用户ID)
+          query = query.or(`is_public.eq.true,user_id.eq.${user.id}`)
+        } else {
+          // 未登录：只能看到公开的
+          query = query.eq('is_public', true)
+        }
+      }
 
       if (filterIds) {
         query = query.in('id', Array.from(filterIds))
@@ -59,15 +87,10 @@ const CardGrid = ({ filterIds = null }) => {
     }
   }
 
-  // 页面加载时获取数据
-  useEffect(() => {
-    fetchCards()
-  }, [])
-
-  // 排序改变时重新获取数据
+  // 页面加载或状态改变时获取数据
   useEffect(() => {
     fetchCards(sortBy)
-  }, [sortBy])
+  }, [sortBy, user, profile, filterIds, mode])
 
   // 格式化价格为人民币格式
   const formatPrice = (price) => {
@@ -154,22 +177,41 @@ const CardGrid = ({ filterIds = null }) => {
                 )}
 
                 {/* Favorite Button */}
-                <button 
-                  onClick={() => toggleFavorite(card.id)}
-                  className={`absolute top-2 right-2 z-10 p-1.5 bg-white/90 backdrop-blur shadow-sm rounded-full border transition-colors ${
-                    favorites.has(card.id) ? 'text-red-500 border-red-100' : 'text-gray-400 border-gray-100 hover:text-red-400'
-                  }`}
-                >
-                  <Heart className={`h-4 w-4 ${favorites.has(card.id) ? 'fill-current' : ''}`} />
-                </button>
+                <div className="absolute top-2 right-2 z-10 flex flex-col space-y-2">
+                  <button 
+                    onClick={() => toggleFavorite(card.id)}
+                    className={`p-1.5 bg-white/90 backdrop-blur shadow-sm rounded-full border transition-colors ${
+                      favorites.has(card.id) ? 'text-red-500 border-red-100' : 'text-gray-400 border-gray-100 hover:text-red-400'
+                    }`}
+                  >
+                    <Heart className={`h-4 w-4 ${favorites.has(card.id) ? 'fill-current' : ''}`} />
+                  </button>
+                  {card.is_public === false ? (
+                    <div className="p-1.5 bg-amber-500/90 backdrop-blur shadow-sm rounded-full text-white flex items-center justify-center" title="私密内容">
+                      <EyeOff className="h-3 w-3" />
+                    </div>
+                  ) : (
+                    mode === 'my_cards' && (
+                      <div className="p-1.5 bg-green-500/90 backdrop-blur shadow-sm rounded-full text-white flex items-center justify-center" title="公开展示">
+                        <Eye className="h-3 w-3" />
+                      </div>
+                    )
+                  )}
+                </div>
 
                 {/* Card Image - Aspect Ratio 4:3 */}
-                <div className="relative pt-[75%] bg-gray-100 overflow-hidden">
+                <div 
+                  className="relative pt-[75%] bg-gray-100 overflow-hidden cursor-pointer group/img"
+                  onClick={() => setSelectedCard(card)}
+                >
                   <img
                     src={card.image_url}
                     alt={card.character || '未命名卡牌'}
-                    className="absolute inset-0 w-full h-full object-cover"
+                    className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover/img:scale-110"
                   />
+                  <div className="absolute inset-0 bg-black/0 group-hover/img:bg-black/20 transition-colors flex items-center justify-center">
+                    <Maximize2 className="text-white opacity-0 group-hover/img:opacity-100 transition-opacity h-8 w-8" />
+                  </div>
                 </div>
                 
                 {/* Card Info - Fixed heights for alignment */}
@@ -256,6 +298,19 @@ const CardGrid = ({ filterIds = null }) => {
           </button>
         </div>
       </div>
+
+      {/* Card Detail Drawer */}
+      <CardDetailDrawer 
+        isOpen={!!selectedCard} 
+        onClose={() => setSelectedCard(null)} 
+        card={selectedCard}
+        user={user}
+        cart={cart}
+        favorites={favorites}
+        toggleCart={toggleCart}
+        updateCartQuantity={updateCartQuantity}
+        toggleFavorite={toggleFavorite}
+      />
     </div>
   )
 }

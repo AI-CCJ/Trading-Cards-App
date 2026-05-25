@@ -34,7 +34,7 @@ const Navbar = () => {
                   <span className="text-white font-bold text-xl">C</span>
                 </div>
                 <span className="text-xl font-bold text-slate-800 hidden sm:block">
-                  CardTrade
+                  YukkeTrade
                 </span>
               </div>
             </div>
