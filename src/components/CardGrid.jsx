@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react'
-import { Calendar, DollarSign, Clock, Image as ImageIcon, Tag, Loader, Edit2, Trash2, Heart, ShoppingCart, Plus, Minus, X, Maximize2, EyeOff, Eye } from 'lucide-react'
+import { Calendar, DollarSign, Clock, Image as ImageIcon, Tag, Loader, Edit2, Trash2, Heart, ShoppingCart, Plus, Minus, X, Maximize2, EyeOff, Eye, Save } from 'lucide-react'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../contexts/AuthContext'
 import CardDetailDrawer from './CardDetailDrawer'
+import ProductFormBlock from './upload/ProductFormBlock'
 
 const CardGrid = ({ filterIds = null, mode = 'all' }) => {
   const [sortBy, setSortBy] = useState('created_at')
@@ -10,7 +11,13 @@ const CardGrid = ({ filterIds = null, mode = 'all' }) => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selectedCard, setSelectedCard] = useState(null)
+  const [selectedCardIds, setSelectedCardIds] = useState(new Set()) // 批量选择的 ID
+  const [editingCard, setEditingCard] = useState(null) // 正在编辑的卡牌
+  const [isSaving, setIsSaving] = useState(false)
   const { user, profile, cart, favorites, toggleCart, updateCartQuantity, toggleFavorite } = useAuth()
+
+  // 判定是否为管理员
+  const isAdmin = profile?.role === 'admin' || user?.email === 'admin@gmail.com';
 
   // 从数据库加载卡牌数据
   const fetchCards = async (sortField = 'created_at') => {
@@ -28,8 +35,6 @@ const CardGrid = ({ filterIds = null, mode = 'all' }) => {
       // 2. 如果是普通登录用户，可以看到 [公开产品] OR [自己的非公开产品]
       // 3. 如果是未登录用户，只能看到 [公开产品]
       // 4. 如果是 my_cards 模式，仅看自己的
-      
-      const isAdmin = profile?.role === 'admin' || user?.email === 'admin@gmail.com'; 
       
       if (mode === 'my_cards') {
         if (user) {
@@ -87,10 +92,119 @@ const CardGrid = ({ filterIds = null, mode = 'all' }) => {
     }
   }
 
+  // 删除卡牌逻辑 (单张或批量)
+  const handleDeleteCards = async (ids) => {
+    const idArray = Array.isArray(ids) ? ids : [ids]
+    if (idArray.length === 0) return
+    
+    const confirmMsg = idArray.length === 1 
+      ? '确定要删除这张卡牌吗？此操作不可撤销。' 
+      : `确定要删除选中的 ${idArray.length} 张卡牌吗？此操作不可撤销。`
+    
+    if (!window.confirm(confirmMsg)) return
+
+    try {
+      setLoading(true)
+      
+      console.log('执行删除, IDs:', idArray);
+      
+      // 逐条执行删除，以便精准捕获每一条的反馈
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const id of idArray) {
+        // 使用 select() 配合 delete 可以返回受影响的数据，用来判断是否真的删除了
+        const { data, error, status } = await supabase
+          .from('cards')
+          .delete()
+          .eq('id', id)
+          .select();
+
+        if (error) {
+          console.error(`ID ${id} 删除失败:`, error);
+          failCount++;
+        } else if (data && data.length > 0) {
+          successCount++;
+        } else {
+          // data 为空说明没有行被删除，通常是 RLS 策略拒绝了（即你不是该产品的拥有者）
+          console.warn(`ID ${id} 删除未生效 (受影响行数为0)，请检查数据库权限或拥有者身份`);
+          failCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        alert(`成功删除 ${successCount} 个产品。${failCount > 0 ? `另外 ${failCount} 个删除失败（可能是权限不足）。` : ''}`);
+      } else {
+        alert('删除失败：数据库未响应删除动作。这通常是因为您的账户没有该产品的删除权限（RLS策略拦截）。请检查下方的 SQL 设置指南。');
+      }
+
+      setSelectedCardIds(new Set()) // 清空选择
+      await fetchCards(sortBy) // 强制刷新列表
+    } catch (err) {
+      console.error('删除过程发生异常:', err)
+      alert(`删除异常: ${err.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 处理勾选
+  const toggleSelectCard = (id) => {
+    setSelectedCardIds(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(id)) {
+        newSet.delete(id)
+      } else {
+        newSet.add(id)
+      }
+      return newSet
+    })
+  }
+
+  // 全选/取消全选
+  const toggleSelectAll = () => {
+    if (selectedCardIds.size === cards.length) {
+      setSelectedCardIds(new Set())
+    } else {
+      setSelectedCardIds(new Set(cards.map(c => c.id)))
+    }
+  }
+
   // 页面加载或状态改变时获取数据
   useEffect(() => {
+    // 只有在非加载状态下或 Auth 已初始化时才执行
     fetchCards(sortBy)
-  }, [sortBy, user, profile, filterIds, mode])
+  }, [sortBy, user?.id, profile?.role, filterIds, mode])
+
+  // 修改卡牌逻辑
+  const handleUpdateCard = async () => {
+    if (!editingCard) return
+    setIsSaving(true)
+    try {
+      const { error } = await supabase
+        .from('cards')
+        .update({
+          character: editingCard.character,
+          category: editingCard.category,
+          year: parseInt(editingCard.year) || 0,
+          price: parseFloat(editingCard.price.toString().replace(/[^\d.]/g, '')) || 0,
+          notes: editingCard.notes,
+          is_public: editingCard.is_public !== false
+        })
+        .eq('id', editingCard.id)
+
+      if (error) throw error
+
+      alert('修改成功！')
+      setEditingCard(null)
+      fetchCards(sortBy)
+    } catch (err) {
+      console.error('修改卡牌失败:', err)
+      alert(`修改失败: ${err.message}`)
+    } finally {
+      setIsSaving(false)
+    }
+  }
 
   // 格式化价格为人民币格式
   const formatPrice = (price) => {
@@ -109,13 +223,13 @@ const CardGrid = ({ filterIds = null, mode = 'all' }) => {
           <h2 className="text-2xl font-bold text-gray-900 mb-4">卡牌展示</h2>
           
           {/* Sort Controls */}
-          <div className="flex items-center justify-between bg-white px-4 py-3 rounded-lg shadow-sm border border-gray-200">
+          <div className="flex flex-col md:flex-row md:items-center justify-between bg-white dark:bg-slate-900 px-4 py-3 rounded-xl shadow-sm border border-gray-200 dark:border-slate-800 space-y-4 md:space-y-0">
             <div className="flex items-center space-x-4">
-              <span className="text-sm font-medium text-gray-700">排序方式：</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">排序方式：</span>
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
-                className="border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700 dark:text-gray-200"
               >
                 <option value="created_at">按上传时间</option>
                 <option value="year">按年份</option>
@@ -123,9 +237,32 @@ const CardGrid = ({ filterIds = null, mode = 'all' }) => {
                 <option value="price_desc">价格：由高到低</option>
               </select>
             </div>
-            <span className="text-sm text-gray-500">
-              共 {cards.length} 张卡牌
-            </span>
+
+            <div className="flex items-center space-x-3">
+              {/* 批量操作按钮 */}
+              {cards.length > 0 && (user || isAdmin) && (
+                <div className="flex items-center space-x-2 border-r dark:border-slate-800 pr-3 mr-1">
+                  <button
+                    onClick={toggleSelectAll}
+                    className="text-xs font-bold text-blue-600 hover:text-blue-700 transition-colors"
+                  >
+                    {selectedCardIds.size === cards.length ? '取消全选' : '全选'}
+                  </button>
+                  {selectedCardIds.size > 0 && (
+                    <button
+                      onClick={() => handleDeleteCards(Array.from(selectedCardIds))}
+                      className="flex items-center space-x-1 px-3 py-1.5 bg-red-50 dark:bg-red-900/20 text-red-600 rounded-lg text-xs font-bold hover:bg-red-100 transition-colors border border-red-100 dark:border-red-900/30"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>删除所选 ({selectedCardIds.size})</span>
+                    </button>
+                  )}
+                </div>
+              )}
+              <span className="text-sm text-gray-500 dark:text-gray-400 font-medium">
+                共 {cards.length} 张卡牌
+              </span>
+            </div>
           </div>
         </div>
 
@@ -163,14 +300,49 @@ const CardGrid = ({ filterIds = null, mode = 'all' }) => {
         {!loading && !error && cards.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {cards.map((card) => (
-              <div key={card.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow flex flex-col h-full relative">
+              <div 
+                key={card.id} 
+                className={`bg-white dark:bg-slate-900 rounded-lg shadow-sm border overflow-hidden hover:shadow-md transition-all flex flex-col h-full relative ${
+                  selectedCardIds.has(card.id) ? 'ring-2 ring-blue-500 border-transparent shadow-lg' : 'border-gray-200 dark:border-slate-800'
+                }`}
+              >
+                {/* Selection Checkbox */}
+                {(user || isAdmin) && (
+                  <div className="absolute top-2 left-2 z-20">
+                    <input 
+                      type="checkbox"
+                      checked={selectedCardIds.has(card.id)}
+                      onChange={() => toggleSelectCard(card.id)}
+                      className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer shadow-sm"
+                    />
+                  </div>
+                )}
+
                 {/* Auth Check: Only owner can edit/delete */}
-                {user && user.id === card.user_id && (
-                  <div className="absolute top-2 left-2 z-10 flex space-x-2">
-                    <button className="p-1.5 bg-white/90 backdrop-blur shadow-sm rounded-full text-blue-600 hover:bg-blue-50 transition-colors border border-blue-100">
+                {(isAdmin || (user && user.id === card.user_id)) && (
+                  <div className={`absolute top-2 left-8 z-10 flex space-x-2 transition-opacity ${selectedCardIds.size > 0 ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // 准备编辑数据，确保 images 格式符合 ProductFormBlock 预期
+                        setEditingCard({
+                          ...card,
+                          images: [{ id: 'main', url: card.image_url }]
+                        });
+                      }}
+                      className="p-1.5 bg-white/90 dark:bg-slate-800/90 backdrop-blur shadow-sm rounded-full text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/50 transition-colors border border-blue-100 dark:border-blue-900/30"
+                      title="编辑卡牌"
+                    >
                       <Edit2 className="h-4 w-4" />
                     </button>
-                    <button className="p-1.5 bg-white/90 backdrop-blur shadow-sm rounded-full text-red-600 hover:bg-red-50 transition-colors border border-red-100">
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteCards(card.id);
+                      }}
+                      className="p-1.5 bg-white/90 dark:bg-slate-800/90 backdrop-blur shadow-sm rounded-full text-red-600 hover:bg-red-50 dark:hover:bg-red-900/50 transition-colors border border-red-100 dark:border-red-900/30"
+                      title="删除卡牌"
+                    >
                       <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
@@ -311,6 +483,52 @@ const CardGrid = ({ filterIds = null, mode = 'all' }) => {
         updateCartQuantity={updateCartQuantity}
         toggleFavorite={toggleFavorite}
       />
+
+      {/* Edit Modal */}
+      {editingCard && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-4xl shadow-2xl relative flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-6 border-b dark:border-slate-800">
+              <h3 className="text-xl font-black text-gray-900 dark:text-white">修改产品信息</h3>
+              <button 
+                onClick={() => setEditingCard(null)}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full transition-colors text-gray-500"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <ProductFormBlock 
+                index={0}
+                product={editingCard}
+                onUpdate={(id, field, value) => setEditingCard(prev => ({ ...prev, [field]: value }))}
+                onRemove={() => setEditingCard(null)}
+              />
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-6 border-t dark:border-slate-800 flex justify-end space-x-4">
+              <button
+                onClick={() => setEditingCard(null)}
+                className="px-6 py-2.5 rounded-xl font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-slate-800 transition-all"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleUpdateCard}
+                disabled={isSaving}
+                className="px-8 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded-xl font-bold transition-all shadow-lg shadow-blue-100 dark:shadow-none flex items-center space-x-2"
+              >
+                {isSaving ? <Loader className="animate-spin h-5 w-5" /> : <Save className="h-5 w-5" />}
+                <span>{isSaving ? '正在保存...' : '保存修改'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

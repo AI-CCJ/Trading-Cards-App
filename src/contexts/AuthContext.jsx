@@ -69,6 +69,29 @@ export const AuthProvider = ({ children }) => {
     }
   }
 
+  // 记录登录日志
+  const logLogin = async (userId) => {
+    try {
+      // 获取 IP 地址
+      const ipResponse = await fetch('https://api.ipify.org?format=json');
+      const ipData = await ipResponse.json();
+      const ip = ipData.ip;
+
+      const { error } = await supabase
+        .from('login_logs')
+        .insert({
+          user_id: userId,
+          ip_address: ip,
+          login_at: new Date().toISOString()
+        });
+
+      if (error) throw error;
+      console.log('登录日志已记录:', ip);
+    } catch (err) {
+      console.error('记录登录日志失败:', err);
+    }
+  }
+
   useEffect(() => {
     let mounted = true
 
@@ -80,7 +103,9 @@ export const AuthProvider = ({ children }) => {
         if (mounted) {
           const currentUser = session?.user ?? null
           setUser(currentUser)
+          
           if (currentUser) {
+            // 非阻塞式加载：不使用 Promise.all 阻塞 loading 状态
             fetchProfile(currentUser.id)
             fetchCart(currentUser.id)
             fetchFavorites(currentUser.id)
@@ -97,14 +122,14 @@ export const AuthProvider = ({ children }) => {
     getInitialSession()
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
+      (event, session) => {
         if (mounted) {
           const currentUser = session?.user ?? null
           setUser(currentUser)
           if (currentUser) {
-            await fetchProfile(currentUser.id)
-            await fetchCart(currentUser.id)
-            await fetchFavorites(currentUser.id)
+            fetchProfile(currentUser.id)
+            fetchCart(currentUser.id)
+            fetchFavorites(currentUser.id)
           } else {
             setProfile(null)
             setCart({})
@@ -207,6 +232,10 @@ export const AuthProvider = ({ children }) => {
         email,
         password,
       })
+
+      if (!error && data?.user) {
+        logLogin(data.user.id);
+      }
       return { data, error }
     } catch (err) {
       return { error: err }
@@ -229,6 +258,7 @@ export const AuthProvider = ({ children }) => {
           username: userData.username,
           email: email
         })
+        logLogin(data.user.id);
       }
       return { data, error }
     } catch (err) {
